@@ -1,0 +1,1 @@
+{"dependencies":{"adm-zip":"^0.5.16"},"description":"Xray VLESS+WS behind Pxxl's HTTPS edge (edge terminates TLS; Xray listens on plain WS locally). Backup line only.","engines":{"node":">=22"},"main":"server.js","name":"pxxl-xray","private":true,"scripts":{"start":"node server.js"},"type":"commonjs","version":"1.0.0"}
