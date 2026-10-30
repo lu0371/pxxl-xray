@@ -47,17 +47,19 @@ if (!WS_PATH || !WS_PATH.startsWith('/')) {
   process.exit(1);
 }
 
-// NOTE: do NOT default to a dir under __dirname — on Pxxl the app directory
-// is not writable (mkdir there fails with ENOENT). The OS tmp dir is writable
-// but is mounted noexec there, so a binary extracted into it fails to spawn
-// with EACCES. Candidate dirs are tried in order and the first one where the
-// binary actually runs (spawn test, not just mode bits) wins.
-const WORKDIR_CANDIDATES = process.env.XRAY_DIR
+// Pxxl runtime facts, learned the hard way across four deploys:
+// - Creating a subdirectory under the app dir fails (mkdir ENOENT), so no
+//   "<dir>/.xray" workdir scheme works there at all.
+// - The tmp dir is writable but noexec: a binary there fails to spawn EACCES.
+// - So: write the binary file DIRECTLY into a candidate dir (no subdir
+//   creation), chmod it, and actually run it. First dir that runs wins.
+//   The config file only needs to be readable, so it always lives in tmp.
+const BIN_DIR_CANDIDATES = process.env.XRAY_DIR
   ? [process.env.XRAY_DIR]
-  : [path.join(process.cwd(), '.xray'), path.join(os.homedir(), '.xray'), path.join(os.tmpdir(), 'xray-work')];
-let WORKDIR = WORKDIR_CANDIDATES[0];
-let BIN = path.join(WORKDIR, 'xray');
-let CONFIG = path.join(WORKDIR, 'config.json');
+  : [...new Set([__dirname, process.cwd(), os.homedir()])];
+let BIN = path.join(BIN_DIR_CANDIDATES[0], 'xray');
+let CONFIG = path.join(os.tmpdir(), 'xray-config.json');
+let WORKDIR = BIN_DIR_CANDIDATES[0];
 
 function download(url, dest) {
   return new Promise((resolve, reject) => {
@@ -90,18 +92,21 @@ async function ensureXray() {
     }
     console.log('xray zip sha256 verified');
   }
+  const zip = new AdmZip(zipPath);
+  const entry = zip.getEntry('xray');
+  if (!entry) throw new Error('xray binary not found in zip');
+  const binData = entry.getData();
   let lastErr = null;
-  for (const dir of WORKDIR_CANDIDATES) {
+  for (const dir of BIN_DIR_CANDIDATES) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
       const bin = path.join(dir, 'xray');
-      new AdmZip(zipPath).extractAllTo(dir, true);
+      fs.writeFileSync(bin, binData);
       fs.chmodSync(bin, 0o755);
       // A noexec mount still passes mode-bit checks, so actually run it.
       const test = spawnSync(bin, ['version'], { timeout: 8000, encoding: 'utf8' });
       if (test.error) throw test.error;
       if (test.status !== 0) throw new Error(`xray version exited ${test.status}`);
-      WORKDIR = dir; BIN = bin; CONFIG = path.join(dir, 'config.json');
+      WORKDIR = dir; BIN = bin;
       console.log(`xray ready in ${dir}`);
       return;
     } catch (err) {
