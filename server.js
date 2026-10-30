@@ -102,6 +102,7 @@ function startXray() {
   };
   fs.writeFileSync(CONFIG, JSON.stringify(config));
   const child = spawn(BIN, ['run', '-c', CONFIG], { stdio: ['ignore', 'inherit', 'inherit'] });
+  child.on('error', (err) => console.error(`xray spawn error: ${err.message}`));
   child.on('exit', (code) => console.error(`xray exited with code ${code}`));
   return child;
 }
@@ -120,6 +121,7 @@ async function main() {
   // starts, but the Xray download can take longer than that window. If we
   // only listen after the download, the check fails and the container is
   // killed before Xray ever arrives. WS proxying works once Xray is up.
+  function buildServer() {
   const server = http.createServer((req, res) => {
     if (req.url === WS_PATH) { res.writeHead(400); res.end('Bad Request'); return; }
     if (req.url && req.url.startsWith('/sub')) {
@@ -150,7 +152,17 @@ async function main() {
     socket.on('error', () => upstream.destroy());
   });
 
-  server.listen(PORT, () => console.log(`listening on ${PORT}`));
+  return server;
+  }
+
+  // Listen on PORT and, if different, on EXPOSE_PORT too: the panel defines
+  // both, and it is unclear which one the platform health check probes.
+  // Bind 0.0.0.0 explicitly so IPv4 probes cannot miss an IPv6-only socket.
+  const LISTEN_PORTS = [...new Set([PORT, parseInt(process.env.EXPOSE_PORT || '', 10)].filter((p) => Number.isInteger(p) && p > 0))];
+  for (const p of LISTEN_PORTS) {
+    buildServer().listen(p, '0.0.0.0', () => console.log(`listening on 0.0.0.0:${p}`));
+  }
+  console.log(`workdir=${WORKDIR} ports=${LISTEN_PORTS.join(',')}`);
 
   // Start Xray in the background; never let a download failure kill the
   // HTTP server (that would fail the health check again). Retry a few times.
