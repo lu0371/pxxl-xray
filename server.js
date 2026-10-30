@@ -25,7 +25,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const https = require('https');
 const AdmZip = require('adm-zip');
 
@@ -48,10 +48,16 @@ if (!WS_PATH || !WS_PATH.startsWith('/')) {
 }
 
 // NOTE: do NOT default to a dir under __dirname — on Pxxl the app directory
-// is not writable (mkdir there fails with ENOENT). The OS tmp dir is writable.
-const WORKDIR = process.env.XRAY_DIR || path.join(os.tmpdir(), 'xray-work');
-const BIN = path.join(WORKDIR, 'xray');
-const CONFIG = path.join(WORKDIR, 'config.json');
+// is not writable (mkdir there fails with ENOENT). The OS tmp dir is writable
+// but is mounted noexec there, so a binary extracted into it fails to spawn
+// with EACCES. Candidate dirs are tried in order and the first one where the
+// binary actually runs (spawn test, not just mode bits) wins.
+const WORKDIR_CANDIDATES = process.env.XRAY_DIR
+  ? [process.env.XRAY_DIR]
+  : [path.join(process.cwd(), '.xray'), path.join(os.homedir(), '.xray'), path.join(os.tmpdir(), 'xray-work')];
+let WORKDIR = WORKDIR_CANDIDATES[0];
+let BIN = path.join(WORKDIR, 'xray');
+let CONFIG = path.join(WORKDIR, 'config.json');
 
 function download(url, dest) {
   return new Promise((resolve, reject) => {
@@ -72,20 +78,38 @@ function download(url, dest) {
 }
 
 async function ensureXray() {
-  if (fs.existsSync(BIN)) return; // cached binary reused; re-download only if missing
-  fs.mkdirSync(WORKDIR, { recursive: true });
-  const zipPath = path.join(WORKDIR, 'xray.zip');
-  console.log(`downloading Xray ${XRAY_VERSION} (official XTLS release)...`);
-  await download(XRAY_ZIP_URL, zipPath);
-  const digest = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
-  if (digest !== XRAY_ZIP_SHA256) {
-    fs.unlinkSync(zipPath);
-    throw new Error(`xray zip sha256 mismatch: got ${digest}`);
+  // Download once to the tmp dir (write-only use, never executed from there).
+  const zipPath = path.join(os.tmpdir(), 'xray-download.zip');
+  if (!fs.existsSync(zipPath)) {
+    console.log(`downloading Xray ${XRAY_VERSION} (official XTLS release)...`);
+    await download(XRAY_ZIP_URL, zipPath);
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
+    if (digest !== XRAY_ZIP_SHA256) {
+      fs.unlinkSync(zipPath);
+      throw new Error(`xray zip sha256 mismatch: got ${digest}`);
+    }
+    console.log('xray zip sha256 verified');
   }
-  console.log('xray zip sha256 verified');
-  new AdmZip(zipPath).extractAllTo(WORKDIR, true);
-  fs.unlinkSync(zipPath);
-  fs.chmodSync(BIN, 0o755);
+  let lastErr = null;
+  for (const dir of WORKDIR_CANDIDATES) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const bin = path.join(dir, 'xray');
+      new AdmZip(zipPath).extractAllTo(dir, true);
+      fs.chmodSync(bin, 0o755);
+      // A noexec mount still passes mode-bit checks, so actually run it.
+      const test = spawnSync(bin, ['version'], { timeout: 8000, encoding: 'utf8' });
+      if (test.error) throw test.error;
+      if (test.status !== 0) throw new Error(`xray version exited ${test.status}`);
+      WORKDIR = dir; BIN = bin; CONFIG = path.join(dir, 'config.json');
+      console.log(`xray ready in ${dir}`);
+      return;
+    } catch (err) {
+      console.error(`xray dir ${dir} unusable: ${err.message}`);
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('no usable xray dir');
 }
 
 function startXray() {
