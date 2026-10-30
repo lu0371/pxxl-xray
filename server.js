@@ -21,6 +21,7 @@
  */
 const http = require('http');
 const net = require('net');
+const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -46,7 +47,9 @@ if (!WS_PATH || !WS_PATH.startsWith('/')) {
   process.exit(1);
 }
 
-const WORKDIR = process.env.XRAY_DIR || path.join(__dirname, '.xray');
+// NOTE: do NOT default to a dir under __dirname — on Pxxl the app directory
+// is not writable (mkdir there fails with ENOENT). The OS tmp dir is writable.
+const WORKDIR = process.env.XRAY_DIR || path.join(os.tmpdir(), 'xray-work');
 const BIN = path.join(WORKDIR, 'xray');
 const CONFIG = path.join(WORKDIR, 'config.json');
 
