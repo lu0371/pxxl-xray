@@ -56,7 +56,10 @@ if (!WS_PATH || !WS_PATH.startsWith('/')) {
 //   The config file only needs to be readable, so it always lives in tmp.
 const BIN_DIR_CANDIDATES = process.env.XRAY_DIR
   ? [process.env.XRAY_DIR]
-  : [...new Set([__dirname, process.cwd(), os.homedir()])];
+  // Pxxl facts: the app dir is read-only, and HOME collapses to it, so those
+  // candidates dedupe to one unwritable dir. /dev/shm (tmpfs) is usually
+  // both writable and executable even when /tmp is noexec — try it first.
+  : [...new Set(['/dev/shm', __dirname, process.cwd(), os.homedir()])];
 let BIN = path.join(BIN_DIR_CANDIDATES[0], 'xray');
 let CONFIG = path.join(os.tmpdir(), 'xray-config.json');
 let WORKDIR = BIN_DIR_CANDIDATES[0];
