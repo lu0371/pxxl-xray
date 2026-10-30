@@ -116,9 +116,10 @@ function subscriptionLink() {
 }
 
 async function main() {
-  await ensureXray();
-  startXray();
-
+  // Listen FIRST: Pxxl's health check runs seconds after the container
+  // starts, but the Xray download can take longer than that window. If we
+  // only listen after the download, the check fails and the container is
+  // killed before Xray ever arrives. WS proxying works once Xray is up.
   const server = http.createServer((req, res) => {
     if (req.url === WS_PATH) { res.writeHead(400); res.end('Bad Request'); return; }
     if (req.url && req.url.startsWith('/sub')) {
@@ -150,6 +151,22 @@ async function main() {
   });
 
   server.listen(PORT, () => console.log(`listening on ${PORT}`));
+
+  // Start Xray in the background; never let a download failure kill the
+  // HTTP server (that would fail the health check again). Retry a few times.
+  const start = async () => { await ensureXray(); startXray(); };
+  try {
+    await start();
+  } catch (err) {
+    console.error('xray startup failed, will retry in background:', err.message);
+    (async () => {
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 15000));
+        try { await start(); console.log('xray started on retry'); return; }
+        catch (e) { console.error('xray retry failed:', e.message); }
+      }
+    })();
+  }
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });
